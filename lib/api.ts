@@ -137,6 +137,55 @@ export const contractsApi = {
     req<ApiContract>(`/contracts/${id}`, { method: 'PATCH', body: JSON.stringify({ status: 'TERMINATED' }) }),
 }
 
+// ── Transactions ─────────────────────────────────────────────────────────────
+
+export type TransactionType = 'INCOME' | 'EXPENSE'
+export type TransactionCategory = 'RENT' | 'DEPOSIT' | 'REPAIR' | 'UTILITIES' | 'OTHER'
+
+export interface ApiTransaction {
+  id: string
+  type: TransactionType
+  category: TransactionCategory
+  amount: number
+  date: string
+  note: string
+  roomId?: string | null
+  propertyId?: string | null
+  contractId?: string | null
+  invoiceId?: string | null
+  createdAt: string
+  room?: { id: string; name: string; property?: { id: string; name: string } } | null
+  property?: { id: string; name: string } | null
+}
+
+export interface CreateTransactionPayload {
+  type: TransactionType
+  category: TransactionCategory
+  amount: number
+  date: string
+  note?: string
+  roomId?: string
+  propertyId?: string
+  contractId?: string
+}
+
+export const transactionsApi = {
+  list: (params?: { type?: string; propertyId?: string; from?: string; to?: string }) => {
+    const q = new URLSearchParams()
+    if (params?.type) q.set('type', params.type)
+    if (params?.propertyId) q.set('propertyId', params.propertyId)
+    if (params?.from) q.set('from', params.from)
+    if (params?.to) q.set('to', params.to)
+    const qs = q.toString()
+    return req<ApiTransaction[]>(`/transactions${qs ? `?${qs}` : ''}`)
+  },
+  create: (data: CreateTransactionPayload) =>
+    req<ApiTransaction>('/transactions', { method: 'POST', body: JSON.stringify(data) }),
+  update: (id: string, data: Partial<CreateTransactionPayload>) =>
+    req<ApiTransaction>(`/transactions/${id}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  remove: (id: string) => req<void>(`/transactions/${id}`, { method: 'DELETE' }),
+}
+
 // ── Invoices ──────────────────────────────────────────────────────────────────
 
 export interface CreateInvoicePayload {

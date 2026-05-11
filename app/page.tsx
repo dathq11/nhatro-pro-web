@@ -9,6 +9,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  Label as RechartsLabel,
   Pie,
   PieChart,
   XAxis,
@@ -51,6 +52,11 @@ import {
   Users,
   X,
   Zap,
+  ArrowDownLeft,
+  ArrowUpRight,
+  Wallet,
+  Filter,
+  Info,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import * as XLSX from "xlsx"
@@ -159,7 +165,7 @@ import {
 } from "@/components/ui/breadcrumb"
 import { Skeleton } from "@/components/ui/skeleton"
 import { toast } from "sonner"
-import { propertiesApi, roomsApi, invoicesApi, contractsApi, tenantsApi, type ApiRoom, type ApiInvoice } from "@/lib/api"
+import { propertiesApi, roomsApi, invoicesApi, contractsApi, tenantsApi, transactionsApi, type ApiRoom, type ApiInvoice, type ApiTransaction, type CreateTransactionPayload, type TransactionType, type TransactionCategory } from "@/lib/api"
 
 // ---------------------------------------------------------------------------
 // Mock data
@@ -196,8 +202,17 @@ const navItems = [
   { icon: Home,         label: "Dashboard",   key: "dashboard" },
   { icon: Building2,    label: "Quản lý nhà", key: "properties" },
   { icon: FileText,     label: "Hoá đơn",     key: "invoices" },
+  { icon: Wallet,       label: "Thu chi",     key: "transactions" },
   { icon: ListChecks,   label: "Báo cáo",     key: "reports",   wip: true },
 ]
+
+const TX_CATEGORY_LABEL: Record<string, string> = {
+  RENT: "Tiền thuê",
+  DEPOSIT: "Tiền cọc",
+  REPAIR: "Sửa chữa",
+  UTILITIES: "Điện/Nước/Dịch vụ",
+  OTHER: "Khác",
+}
 
 type RoomStatus = "occupied" | "vacant" | "unpaid" | "expiring" | "expired"
 interface TenantInfo { name: string; cccd: string; phone?: string }
@@ -394,24 +409,26 @@ function DashboardContent() {
   const [customTo, setCustomTo] = React.useState(ALL_MONTHS.length - 1)
   const [pendingFrom, setPendingFrom] = React.useState<number | null>(null)
   const [pickerYear, setPickerYear] = React.useState(MAX_PICKER_YEAR)
-  const [txToa, setTxToa] = React.useState<string>("all")
+  const [txToa, setTxToa] = React.useState<string[]>([])
   const [txToaOpen, setTxToaOpen] = React.useState(false)
-  const [pendingToa, setPendingToa] = React.useState<string>("all")
-  const [profitPeriod, setProfitPeriod] = React.useState<"6m" | "1y">("6m")
+  const [pendingToa, setPendingToa] = React.useState<string[]>([])
   const [pendingToaOpen, setPendingToaOpen] = React.useState(false)
   const [allBuildings, setAllBuildings] = React.useState<string[]>([])
   const [buildingInfo, setBuildingInfo] = React.useState<Record<string, BuildingInfo>>({})
   const [buildingData, setBuildingData] = React.useState<Record<string, [number, number][]>>({})
   const [propertyRooms, setPropertyRooms] = React.useState<Record<string, RoomData[]>>({})
-  const [view, setView] = React.useState<"dashboard" | "properties" | "invoices">("dashboard")
+  const [view, setView] = React.useState<"dashboard" | "properties" | "invoices" | "transactions">("dashboard")
   const [activeBuilding, setActiveBuilding] = React.useState("")
   const [roomFilter, setRoomFilter] = React.useState("all")
   const [tabsVisible, setTabsVisible] = React.useState(true)
+  const [txHeaderVisible, setTxHeaderVisible] = React.useState(true)
+  const txLastScrollY = React.useRef(0)
   const [photoIdx, setPhotoIdx] = React.useState<Record<string, number>>({})
   const [lightbox, setLightbox] = React.useState<{ building: string; idx: number } | null>(null)
   const [selectedRoom, setSelectedRoom] = React.useState<{ room: RoomData; building: string } | null>(null)
   const [sheetPhotoIdx, setSheetPhotoIdx] = React.useState(0)
   const [isSubmitting, setIsSubmitting] = React.useState(false)
+  const [invoiceLoadingBtn, setInvoiceLoadingBtn] = React.useState<"save" | "publish" | "pay" | "draft" | null>(null)
   const submittingRef = React.useRef(false)
   const [addBuildingOpen, setAddBuildingOpen] = React.useState(false)
   const [buildingForm, setBuildingForm] = React.useState({ name: "", address: "", floors: "", totalRooms: "", contractMonths: "", baseRent: "" })
@@ -509,6 +526,174 @@ function DashboardContent() {
 
   React.useEffect(() => { loadData() }, [loadData])
 
+  const TX_CACHE_KEY = 'tx-building-cache'
+  type TxBuildingEntry = { propertyId: string; propertyName: string }
+  const readTxCache = (): Record<string, TxBuildingEntry> => {
+    try { return JSON.parse(localStorage.getItem(TX_CACHE_KEY) ?? '{}') } catch { return {} }
+  }
+  const writeTxCache = (txId: string, entry: TxBuildingEntry) => {
+    try {
+      const cache = readTxCache()
+      localStorage.setItem(TX_CACHE_KEY, JSON.stringify({ ...cache, [txId]: entry }))
+    } catch { /* ignore */ }
+  }
+
+  const loadTransactions = React.useCallback(async () => {
+    setTxLoading(true)
+    try {
+      const data = await transactionsApi.list()
+      const cache = readTxCache()
+      setTransactions(prev => {
+        const merged = data.map(apiTx => {
+          const local = prev.find(l => l.id === apiTx.id)
+          const hasBuilding = !!(apiTx.room || apiTx.property)
+          if (!hasBuilding) {
+            // 1. Prefer local state (same session)
+            if (local?.room) return { ...apiTx, room: local.room }
+            if (local?.property) return { ...apiTx, property: local.property }
+            // 2. Fall back to localStorage cache (across reloads)
+            const cached = cache[apiTx.id]
+            if (cached) return { ...apiTx, property: { id: cached.propertyId, name: cached.propertyName } }
+          }
+          return apiTx
+        })
+        const optimistic = prev.filter(l => l.id.startsWith('tx-local-') && !data.find(d => d.id === l.id))
+        return [...optimistic, ...merged]
+      })
+    } catch { /* ignore */ } finally {
+      setTxLoading(false)
+    }
+  }, [])
+
+  React.useEffect(() => { loadTransactions() }, [loadTransactions])
+
+  React.useEffect(() => {
+    if (view === "transactions") {
+      loadTransactions()
+      setTxHeaderVisible(true)
+    }
+  }, [view, loadTransactions])
+
+  const handleTxOpenDialog = (type: "INCOME" | "EXPENSE") => {
+    setTxDialogType(type)
+    setTxForm({ category: type === "INCOME" ? "RENT" : "OTHER", amount: "", date: new Date().toISOString().slice(0, 10), note: "", building: "", roomId: "" })
+    setTxFormErrors({})
+    setTxDialogOpen(true)
+  }
+
+  const handleTxSubmit = async () => {
+    const errs: Record<string, boolean> = {}
+    if (!txForm.amount || isNaN(Number(txForm.amount)) || Number(txForm.amount) <= 0) errs.amount = true
+    if (!txForm.building) errs.building = true
+    if (!txForm.note.trim()) errs.note = true
+    setTxFormErrors(errs)
+    if (Object.keys(errs).length > 0) return
+    setTxSubmitting(true)
+    const selectedRoom = txForm.roomId
+      ? (propertyRooms[txForm.building] ?? []).find(r => r._dbId === txForm.roomId)
+      : undefined
+    const propId = buildingInfo[txForm.building]?.dbId ?? ""
+    const local: ApiTransaction = {
+      id: `tx-local-${Date.now()}`,
+      type: txDialogType,
+      category: txForm.category,
+      amount: Number(txForm.amount),
+      date: new Date(txForm.date).toISOString(),
+      note: txForm.note,
+      createdAt: new Date().toISOString(),
+      room: selectedRoom
+        ? { id: selectedRoom._dbId ?? "", name: selectedRoom.id, property: { id: propId, name: txForm.building } }
+        : null,
+      property: !selectedRoom && txForm.building ? { id: propId, name: txForm.building } : null,
+    }
+    setTransactions(prev => [local, ...prev])
+    setTxDialogOpen(false)
+    toast.success(txDialogType === "INCOME" ? "Đã ghi thu thành công" : "Đã ghi chi thành công")
+    try {
+      const payload: CreateTransactionPayload = {
+        type: txDialogType,
+        category: txForm.category,
+        amount: Number(txForm.amount),
+        date: txForm.date,
+        note: txForm.note,
+        ...(txForm.roomId ? { roomId: txForm.roomId } : { propertyId: propId || undefined }),
+      }
+      const created = await transactionsApi.create(payload)
+      if (txForm.building && propId) writeTxCache(created.id, { propertyId: propId, propertyName: txForm.building })
+      setTransactions(prev => prev.map(t =>
+        t.id === local.id ? { ...created, room: created.room ?? local.room, property: created.property ?? local.property } : t
+      ))
+    } catch { /* best-effort – local state already updated */ } finally {
+      setTxSubmitting(false)
+    }
+  }
+
+  const handleTxOpenEdit = (tx: ApiTransaction) => {
+    setTxEditing(tx)
+    setTxForm({
+      category: tx.category,
+      amount: String(tx.amount),
+      date: tx.date.slice(0, 10),
+      note: tx.note ?? "",
+      building: tx.room?.property?.name ?? tx.property?.name ?? "",
+      roomId: tx.room?.id ?? "",
+    })
+    setTxFormErrors({})
+    setTxDetailOpen(true)
+  }
+
+  const handleTxUpdate = async () => {
+    if (!txEditing) return
+    const errs: Record<string, boolean> = {}
+    if (!txForm.amount || isNaN(Number(txForm.amount)) || Number(txForm.amount) <= 0) errs.amount = true
+    if (!txForm.building) errs.building = true
+    if (!txForm.note.trim()) errs.note = true
+    setTxFormErrors(errs)
+    if (Object.keys(errs).length > 0) return
+    setTxActionLoading(true)
+    const updRoom = txForm.roomId
+      ? (propertyRooms[txForm.building] ?? []).find(r => r._dbId === txForm.roomId)
+      : undefined
+    const updPropId = buildingInfo[txForm.building]?.dbId ?? ""
+    const updated: ApiTransaction = {
+      ...txEditing,
+      category: txForm.category,
+      amount: Number(txForm.amount),
+      date: new Date(txForm.date).toISOString(),
+      note: txForm.note,
+      room: updRoom ? { id: updRoom._dbId ?? "", name: updRoom.id, property: { id: updPropId, name: txForm.building } } : null,
+      property: !updRoom && txForm.building ? { id: updPropId, name: txForm.building } : null,
+    }
+    setTransactions(prev => prev.map(t => t.id === txEditing.id ? updated : t))
+    setTxDetailOpen(false)
+    toast.success("Đã cập nhật giao dịch")
+    try {
+      await transactionsApi.update(txEditing.id, {
+        category: txForm.category,
+        amount: Number(txForm.amount),
+        date: txForm.date,
+        note: txForm.note,
+        ...(txForm.roomId ? { roomId: txForm.roomId } : { propertyId: updPropId || undefined }),
+      })
+      if (txForm.building && updPropId) writeTxCache(txEditing.id, { propertyId: updPropId, propertyName: txForm.building })
+    } catch { /* best-effort */ } finally {
+      setTxActionLoading(false)
+    }
+  }
+
+  const handleTxDelete = async (id: string) => {
+    setTxActionLoading(true)
+    setTransactions(prev => prev.filter(t => t.id !== id))
+    setTxDeleteConfirm(null)
+    setTxDetailOpen(false)
+    toast.success("Đã xoá giao dịch")
+    try {
+      await transactionsApi.remove(id)
+    } catch { /* best-effort */ } finally {
+      setTxActionLoading(false)
+    }
+  }
+
   // --- Upload dialog ---
   const [uploadDialogOpen, setUploadDialogOpen] = React.useState(false)
   const [uploadBuilding, setUploadBuilding] = React.useState("")
@@ -530,6 +715,29 @@ function DashboardContent() {
   const [invoiceFromSheet, setInvoiceFromSheet] = React.useState(false)
   const [invoiceConfirm, setInvoiceConfirm] = React.useState<{ id: string; action: "issue" | "pay" | "delete" } | null>(null)
   const [errorAlert, setErrorAlert] = React.useState<{ title: string; description?: string } | null>(null)
+
+  // ── Transactions ────────────────────────────────────────────────────────────
+  const [transactions, setTransactions] = React.useState<ApiTransaction[]>([])
+  const [txLoading, setTxLoading] = React.useState(false)
+  const [txTab, setTxTab] = React.useState<"all" | "income" | "expense">("all")
+  const [txSort, setTxSort] = React.useState<{ col: "amount" | "date"; dir: "asc" | "desc" } | null>(null)
+  const [txBuildings, setTxBuildings] = React.useState<string[]>([])
+  const [txSearch, setTxSearch] = React.useState("")
+  const [txBuildingOpen, setTxBuildingOpen] = React.useState(false)
+  const [txFrom, setTxFrom] = React.useState<Date | undefined>(undefined)
+  const [txTo, setTxTo] = React.useState<Date | undefined>(undefined)
+  const [txDateFromOpen, setTxDateFromOpen] = React.useState(false)
+  const [txDateToOpen, setTxDateToOpen] = React.useState(false)
+  const [txFormDateOpen, setTxFormDateOpen] = React.useState(false)
+  const [txEditing, setTxEditing] = React.useState<ApiTransaction | null>(null)
+  const [txDetailOpen, setTxDetailOpen] = React.useState(false)
+  const [txDeleteConfirm, setTxDeleteConfirm] = React.useState<string | null>(null)
+  const [txActionLoading, setTxActionLoading] = React.useState(false)
+  const [txDialogOpen, setTxDialogOpen] = React.useState(false)
+  const [txDialogType, setTxDialogType] = React.useState<"INCOME" | "EXPENSE">("INCOME")
+  const [txForm, setTxForm] = React.useState({ category: "OTHER" as TransactionCategory, amount: "", date: new Date().toISOString().slice(0, 10), note: "", building: "", roomId: "" })
+  const [txFormErrors, setTxFormErrors] = React.useState<Record<string, boolean>>({})
+  const [txSubmitting, setTxSubmitting] = React.useState(false)
   const [editingInvoice, setEditingInvoice] = React.useState<InvoiceData | null>(null)
   const [invoiceRoomOpen, setInvoiceRoomOpen] = React.useState(false)
   const [invoiceForm, setInvoiceForm] = React.useState({
@@ -633,43 +841,32 @@ function DashboardContent() {
     { name: "Sắp hết HĐ", value: expiringCount, fill: "var(--chart-4)" },
   ]
 
-  const _profitStartIdx = profitPeriod === "6m" ? ALL_MONTHS.length - 6 : 0
   const buildingProfitData = allBuildings.map(b => {
-    let thu = 0, goc = 0
-    for (let i = _profitStartIdx; i < ALL_MONTHS.length; i++) {
-      const monthThu = buildingData[b]?.[i]?.[0] ?? 0
-      const monthGoc = buildingData[b]?.[i]?.[1] ?? 0
-      if (monthThu > 0) { thu += monthThu; goc += monthGoc }
+    let net = 0
+    for (const tx of transactions) {
+      const txBuilding = tx.room?.property?.name ?? tx.property?.name
+      if (txBuilding !== b) continue
+      net += tx.type === "INCOME" ? tx.amount : -tx.amount
     }
-    return { name: b.replace("Toà ", ""), fullName: b, chi: goc, lai: Math.max(0, thu - goc) }
+    return { fullName: b, net }
   })
 
-  const buildingProfitConfig = {
-    chi: { label: "Chi phí", color: "var(--chart-2)" },
-    lai: { label: "Lãi",     color: "var(--chart-1)" },
-  } satisfies ChartConfig
-
   const txHistory = React.useMemo(() =>
-    invoices
-      .filter(inv => inv.status === "paid")
-      .map(inv => ({
-        id:     inv.id,
-        type:   "income" as const,
-        desc:   `Thu tiền hoá đơn ${inv.month}`,
-        phong:  `${inv.roomId} – ${inv.building}`,
-        toa:    inv.building,
-        date:   inv.createdAt,
-        amount: inv.totalAmount,
-      }))
-      .sort((a, b) => {
-        // createdAt là "dd/MM/yyyy" – parse để sort mới nhất lên đầu
-        const parse = (d: string) => {
-          const [dd, mm, yyyy] = d.split("/")
-          return new Date(+yyyy, +mm - 1, +dd).getTime()
-        }
-        return parse(b.date) - parse(a.date)
-      }),
-  [invoices])
+    [...transactions]
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .map(tx => ({
+        id:    tx.id,
+        type:  tx.type === "INCOME" ? "income" as const : "expense" as const,
+        desc:  tx.note || TX_CATEGORY_LABEL[tx.category] || tx.category,
+        phong: tx.room ? `${tx.room.name}${tx.room.property ? ` – ${tx.room.property.name}` : ""}` : "",
+        toa:   tx.room?.property?.name ?? tx.property?.name ?? "",
+        date:  (() => {
+          const d = new Date(tx.date)
+          return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}/${d.getFullYear()}`
+        })(),
+        amount: tx.amount,
+      })),
+  [transactions])
 
   const resetBuildingForm = () => {
     setBuildingForm({ name: "", address: "", floors: "", totalRooms: "", contractMonths: "", baseRent: "" })
@@ -1281,6 +1478,10 @@ function DashboardContent() {
     setSelectedBuildings((prev) =>
       prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b]
     )
+  const togglePendingToa = (b: string) =>
+    setPendingToa((prev) => prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b])
+  const toggleTxToa = (b: string) =>
+    setTxToa((prev) => prev.includes(b) ? prev.filter((x) => x !== b) : [...prev, b])
 
   const unpaid = todos.filter((t) => t.type === "unpaid")
 
@@ -1521,6 +1722,7 @@ function DashboardContent() {
 
     const roomDbId = room?._dbId
     setIsSubmitting(true)
+    setInvoiceLoadingBtn(status === "pending" ? "publish" : "draft")
     if (roomDbId) {
       try {
         await invoicesApi.create({
@@ -1572,6 +1774,7 @@ function DashboardContent() {
     }
 
     setIsSubmitting(false)
+    setInvoiceLoadingBtn(null)
     setInvoiceDialogOpen(false)
     resetInvoiceForm()
     toast.success(status === "pending" ? "Hoá đơn đã được phát hành" : "Đã lưu nháp hoá đơn")
@@ -1611,10 +1814,11 @@ function DashboardContent() {
     const tenantName = room?.tenants?.[0]?.name ?? editingInvoice.tenantName
     const { rent, elecKwh, elecPrice, elecAmt, waterM3, waterPrice, waterAmt, internetAmt, serviceAmt, total } = calcInvoiceTotal()
 
-    // Check if this is an API-backed invoice (has a cuid-style id from DB)
-    const isApiInvoice = editingInvoice.id.startsWith("inv-") && editingInvoice.id.length > 10 && !editingInvoice.id.match(/^inv-[a-z]\d+$/)
+    // Mock invoices have IDs like "inv-{timestamp}" (all digits after dash, length < 25)
+    const isMockInvoice = editingInvoice.id.startsWith("inv-") && editingInvoice.id.length < 25
     setIsSubmitting(true)
-    if (isApiInvoice || (room?._dbId)) {
+    setInvoiceLoadingBtn(publishNow ? "publish" : "save")
+    if (!isMockInvoice) {
       try {
         const updatePayload = {
           rentAmount: rent,
@@ -1635,6 +1839,7 @@ function DashboardContent() {
       } catch (err: any) {
         toast.error(err.message ?? "Lỗi khi cập nhật hoá đơn")
         setIsSubmitting(false)
+        setInvoiceLoadingBtn(null)
         return
       }
     } else {
@@ -1660,9 +1865,15 @@ function DashboardContent() {
         note: invoiceForm.note,
       }
       setInvoices(prev => prev.map(inv => inv.id === editingInvoice.id ? updated : inv))
+      setTransactions(prev => prev.map(t =>
+        t.invoiceId === editingInvoice.id
+          ? { ...t, amount: total, note: editingInvoice.invoiceNumber, room: { id: t.room?.id ?? "", name: roomId, property: { id: "", name: building } } }
+          : t
+      ))
     }
 
     setIsSubmitting(false)
+    setInvoiceLoadingBtn(null)
     setInvoiceDialogOpen(false)
     setEditingInvoice(null)
     resetInvoiceForm()
@@ -1716,6 +1927,26 @@ function DashboardContent() {
           return inv
         })
       })
+      if (action === "pay") {
+        const inv = invoices.find(i => i.id === id)
+        if (inv) {
+          const linkedTx: ApiTransaction = {
+            id: `tx-inv-${id}`,
+            type: "INCOME",
+            category: "RENT",
+            amount: inv.totalAmount,
+            date: new Date().toISOString(),
+            note: inv.invoiceNumber,
+            invoiceId: id,
+            createdAt: new Date().toISOString(),
+            room: { id: "", name: inv.roomId, property: { id: "", name: inv.building } },
+          }
+          setTransactions(prev => [linkedTx, ...prev.filter(t => t.invoiceId !== id)])
+        }
+      }
+      if (action === "delete") {
+        setTransactions(prev => prev.filter(t => t.invoiceId !== id))
+      }
     }
 
     setIsSubmitting(false)
@@ -2015,6 +2246,34 @@ function DashboardContent() {
                   <Building2 className="size-3.5" />
                   Thêm tòa nhà
                 </Button>
+              </div>
+            )}
+
+            {/* Page header – Transactions */}
+            {view === "transactions" && (
+              <div className="flex items-center justify-between border-b px-6 py-3">
+                <div className="flex flex-col gap-0.5">
+                  <h1 className="text-base font-semibold">Thu chi</h1>
+                  <Breadcrumb>
+                    <BreadcrumbList>
+                      <BreadcrumbItem>
+                        <BreadcrumbLink render={<button onClick={() => setView("dashboard")} />}>Trang chủ</BreadcrumbLink>
+                      </BreadcrumbItem>
+                      <BreadcrumbSeparator />
+                      <BreadcrumbItem><BreadcrumbPage>Thu chi</BreadcrumbPage></BreadcrumbItem>
+                    </BreadcrumbList>
+                  </Breadcrumb>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button size="lg" variant="outline" className="gap-1.5" onClick={() => handleTxOpenDialog("EXPENSE")}>
+                    <ArrowDownLeft className="size-3.5" />
+                    Ghi chi
+                  </Button>
+                  <Button size="lg" className="gap-1.5" onClick={() => handleTxOpenDialog("INCOME")}>
+                    <ArrowUpRight className="size-3.5" />
+                    Ghi thu
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -2479,35 +2738,22 @@ function DashboardContent() {
               {/* ── Building profit donut: full mobile · 3/8 md · 4/12 lg ── */}
               <Card className="col-span-4 md:col-span-3 lg:col-span-4 py-4 gap-4">
                 <CardHeader className="py-0">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <CardTitle className="text-base font-semibold">Tỉ lệ lãi theo toà</CardTitle>
-                      <CardDescription className="text-sm">Tỷ trọng lãi từng toà nhà</CardDescription>
-                    </div>
-                    <ToggleGroup
-                      value={[profitPeriod]}
-                      onValueChange={(vals: string[]) => {
-                        const next = vals.find(v => v !== profitPeriod)
-                        if (next) setProfitPeriod(next as "6m" | "1y")
-                      }}
-                      className="shrink-0 h-10 rounded-md border"
-                    >
-                      <ToggleGroupItem value="6m" className="h-10 px-3">6T</ToggleGroupItem>
-                      <ToggleGroupItem value="1y" className="h-10 px-3">1N</ToggleGroupItem>
-                    </ToggleGroup>
+                  <div>
+                    <CardTitle className="text-base font-semibold">Tỉ lệ lãi theo toà</CardTitle>
+                    <CardDescription className="text-sm">Tỷ trọng lãi từng toà nhà</CardDescription>
                   </div>
                 </CardHeader>
                 <Separator />
                 <CardContent className="flex flex-1 flex-col items-center gap-4">
                   {(() => {
-                    const totalLai = buildingProfitData.reduce((s, x) => s + x.lai, 0)
-                    const hasData = totalLai > 0
+                    const netTotal = buildingProfitData.reduce((s, d) => s + d.net, 0)
+                    const hasData = buildingProfitData.some(d => d.net > 0)
                     const pieData = hasData
-                      ? buildingProfitData.map((d, i) => ({ name: d.fullName, value: d.lai, fill: `var(--chart-${i + 1})` }))
+                      ? buildingProfitData.filter(d => d.net > 0).map((d, i) => ({ name: d.fullName, value: d.net, fill: `var(--chart-${i + 1})` }))
                       : [{ name: "", value: 1, fill: "var(--muted)" }]
                     return (
                       <>
-                        <ChartContainer config={buildingProfitConfig} className="h-44 w-full">
+                        <ChartContainer config={{}} className="h-44 w-full">
                           <PieChart>
                             <Pie
                               data={pieData}
@@ -2517,22 +2763,50 @@ function DashboardContent() {
                               outerRadius={72}
                               dataKey="value"
                               paddingAngle={hasData ? 2 : 0}
-                            />
+                            >
+                              <RechartsLabel
+                                content={({ viewBox }) => {
+                                  if (!viewBox || !("cx" in viewBox)) return null
+                                  const { cx, cy } = viewBox as { cx: number; cy: number }
+                                  return (
+                                    <text x={cx} y={cy} textAnchor="middle" dominantBaseline="middle">
+                                      <tspan x={cx} dy="-0.5em" className="fill-foreground text-[11px] font-semibold">
+                                        {hasData ? (netTotal / 1_000_000).toFixed(1) + "tr ₫" : "—"}
+                                      </tspan>
+                                      <tspan x={cx} dy="1.4em" className="fill-muted-foreground text-[10px]">
+                                        Tổng chênh
+                                      </tspan>
+                                    </text>
+                                  )
+                                }}
+                              />
+                            </Pie>
                             {hasData && (
                               <ChartTooltip
-                                content={
-                                  <ChartTooltipContent
-                                    nameKey="name"
-                                    formatter={(value) => [Number(value).toLocaleString("vi-VN") + " ₫", "Lãi"]}
-                                  />
-                                }
+                                content={({ active, payload }) => {
+                                  if (!active || !payload?.length) return null
+                                  const item = payload[0]
+                                  const pct = netTotal > 0 ? Math.round((Number(item.value) / netTotal) * 100) : 0
+                                  return (
+                                    <div className="rounded-lg border bg-background px-3 py-2 shadow-sm text-xs">
+                                      <div className="flex items-center gap-1.5 mb-1.5">
+                                        <span className="size-2 rounded-full shrink-0" style={{ background: item.payload.fill }} />
+                                        <span className="font-medium">{item.payload.name}</span>
+                                      </div>
+                                      <div className="flex items-center justify-between gap-6">
+                                        <span className="text-muted-foreground">Chênh</span>
+                                        <span className="font-semibold tabular-nums">{Number(item.value).toLocaleString("vi-VN")} ₫ ({pct}%)</span>
+                                      </div>
+                                    </div>
+                                  )
+                                }}
                               />
                             )}
                           </PieChart>
                         </ChartContainer>
                         <div className="grid grid-cols-2 gap-x-16 gap-y-2 my-auto">
                           {buildingProfitData.map((d, i) => {
-                            const pct = hasData ? Math.round((d.lai / totalLai) * 100) : 0
+                            const pct = netTotal !== 0 ? Math.round((d.net / netTotal) * 100) : 0
                             return (
                               <div key={d.fullName} className="flex items-center gap-1.5 text-xs">
                                 <div className="flex items-center gap-1.5">
@@ -2556,7 +2830,7 @@ function DashboardContent() {
               {/* ── Hoá đơn chờ thu: full mobile · 4/8 md · 6/12 lg ── */}
               {(() => {
                 const allPending = invoices.filter(inv => inv.status === "pending")
-                const pendingInvoices = allPending.filter(inv => pendingToa === "all" || inv.building === pendingToa)
+                const pendingInvoices = allPending.filter(inv => pendingToa.length === 0 || pendingToa.includes(inv.building))
                 return (
                   <Card className="col-span-4 md:col-span-4 lg:col-span-6 flex flex-col py-4 gap-4">
                     <CardHeader className="py-0">
@@ -2572,19 +2846,21 @@ function DashboardContent() {
                           <Popover open={pendingToaOpen} onOpenChange={setPendingToaOpen}>
                             <PopoverTrigger render={<Button variant="outline" size="lg" className="shrink-0 gap-1" />}>
                               <Building2 className="size-3" />
-                              {pendingToa === "all" ? "Tất cả toà" : pendingToa}
+                              {pendingToa.length === 0 ? "Tất cả toà" : pendingToa.length === 1 ? pendingToa[0] : `${pendingToa.length} toà`}
                               <ChevronDown className="size-3 text-muted-foreground" />
                             </PopoverTrigger>
-                            <PopoverContent className="w-36 p-2" align="end">
-                              <div className="flex flex-col gap-0.5">
-                                {["all", ...allBuildings].map((toa) => (
-                                  <button
-                                    key={toa}
-                                    onClick={() => { setPendingToa(toa); setPendingToaOpen(false) }}
-                                    className={["rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted", pendingToa === toa ? "font-medium text-foreground" : "text-muted-foreground"].join(" ")}
-                                  >
-                                    {toa === "all" ? "Tất cả toà" : toa}
-                                  </button>
+                            <PopoverContent className="w-44 p-2" align="end">
+                              <div className="flex flex-col gap-1">
+                                <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted">
+                                  <Checkbox checked={pendingToa.length === 0} onCheckedChange={() => setPendingToa([])} />
+                                  <span className="font-medium">Tất cả</span>
+                                </label>
+                                <Separator />
+                                {allBuildings.map((b) => (
+                                  <label key={b} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted">
+                                    <Checkbox checked={pendingToa.includes(b)} onCheckedChange={() => togglePendingToa(b)} />
+                                    <span>{b}</span>
+                                  </label>
                                 ))}
                               </div>
                             </PopoverContent>
@@ -2595,7 +2871,7 @@ function DashboardContent() {
                     <Separator />
                     <CardContent className="p-0 flex-1 overflow-hidden">
                       <ScrollArea className="h-[336px]">
-                        <div className="flex flex-col divide-y px-6">
+                        <div className="flex flex-col px-6">
                           {pendingInvoices.length === 0 && (
                             <p className="py-8 text-center text-sm text-muted-foreground">Không có hoá đơn chờ thu</p>
                           )}
@@ -2643,34 +2919,31 @@ function DashboardContent() {
                       <CardDescription className="text-sm">Giao dịch gần đây</CardDescription>
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
-                    <Button variant="ghost" size="lg" className="text-muted-foreground">
-                      Xem tất cả
-                    </Button>
-                    <Popover open={txToaOpen} onOpenChange={setTxToaOpen}>
-                      <PopoverTrigger render={
-                        <Button variant="outline" size="lg" className="shrink-0 gap-1" />
-                      }>
-                        <Building2 className="size-3" />
-                        {txToa === "all" ? "Tất cả toà" : txToa}
-                        <ChevronDown className="size-3 text-muted-foreground" />
-                      </PopoverTrigger>
-                      <PopoverContent className="w-36 p-2" align="end">
-                        <div className="flex flex-col gap-0.5">
-                          {["all", ...allBuildings].map((toa) => (
-                            <button
-                              key={toa}
-                              onClick={() => { setTxToa(toa); setTxToaOpen(false) }}
-                              className={[
-                                "rounded px-2 py-1.5 text-left text-xs transition-colors hover:bg-muted",
-                                txToa === toa ? "font-medium text-foreground" : "text-muted-foreground",
-                              ].join(" ")}
-                            >
-                              {toa === "all" ? "Tất cả toà" : toa}
-                            </button>
-                          ))}
-                        </div>
-                      </PopoverContent>
-                    </Popover>
+                      <Button variant="ghost" size="lg" className="text-muted-foreground" onClick={() => setView("transactions")}>
+                        Xem tất cả
+                      </Button>
+                      <Popover open={txToaOpen} onOpenChange={setTxToaOpen}>
+                        <PopoverTrigger render={<Button variant="outline" size="lg" className="shrink-0 gap-1" />}>
+                          <Building2 className="size-3" />
+                          {txToa.length === 0 ? "Tất cả toà" : txToa.length === 1 ? txToa[0] : `${txToa.length} toà`}
+                          <ChevronDown className="size-3 text-muted-foreground" />
+                        </PopoverTrigger>
+                        <PopoverContent className="w-44 p-2" align="end">
+                          <div className="flex flex-col gap-1">
+                            <label className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted">
+                              <Checkbox checked={txToa.length === 0} onCheckedChange={() => setTxToa([])} />
+                              <span className="font-medium">Tất cả</span>
+                            </label>
+                            <Separator />
+                            {allBuildings.map((b) => (
+                              <label key={b} className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-muted">
+                                <Checkbox checked={txToa.includes(b)} onCheckedChange={() => toggleTxToa(b)} />
+                                <span>{b}</span>
+                              </label>
+                            ))}
+                          </div>
+                        </PopoverContent>
+                      </Popover>
                     </div>
                   </div>
                 </CardHeader>
@@ -2678,24 +2951,19 @@ function DashboardContent() {
                 <CardContent className="p-0">
                   <ScrollArea className="h-[336px]">
                     <div className="flex flex-col px-6 pb-4">
-                      {txHistory.filter((tx) => txToa === "all" || tx.toa === txToa).length === 0 && (
+                      {txHistory.filter((tx) => txToa.length === 0 || txToa.includes(tx.toa)).length === 0 && (
                         <p className="py-8 text-center text-sm text-muted-foreground">Chưa có giao dịch nào</p>
                       )}
                       {txHistory
-                        .filter((tx) => txToa === "all" || tx.toa === txToa)
+                        .filter((tx) => txToa.length === 0 || txToa.includes(tx.toa))
                         .map((tx, i, arr) => (
                           <div
                             key={tx.id}
-                            className={[
-                              "flex items-center gap-3 py-2.5 cursor-pointer rounded-sm hover:bg-muted/50 transition-colors -mx-2 px-2",
-                              i < arr.length - 1 ? "border-b" : "",
-                            ].join(" ")}
+                            className="flex items-center gap-3 py-2.5 cursor-pointer hover:bg-muted/50 transition-colors -mx-6 px-6"
                             onClick={() => {
-                              const inv = invoices.find(inv => inv.id === tx.id)
-                              if (!inv) return
-                              loadInvoiceIntoForm(inv)
-                              setEditingInvoice(inv)
-                              setInvoiceDialogOpen(true)
+                              const original = transactions.find(t => t.id === tx.id)
+                              if (!original) return
+                              handleTxOpenEdit(original)
                             }}
                           >
                             <div
@@ -2710,7 +2978,7 @@ function DashboardContent() {
                             </div>
                             <div className="flex-1 overflow-hidden">
                               <p className="truncate text-sm font-medium">{tx.desc}</p>
-                              <p className="truncate text-xs text-muted-foreground">{tx.phong} · {tx.date}</p>
+                              <p className="truncate text-xs text-muted-foreground">{tx.toa || "—"} – {tx.date}</p>
                             </div>
                             <span className="shrink-0 text-sm font-semibold tabular-nums text-foreground">
                               {tx.type === "income" ? "+" : "−"}{tx.amount.toLocaleString("vi-VN")} ₫
@@ -2917,7 +3185,7 @@ function DashboardContent() {
                             className="group hover:bg-muted/40 transition-colors cursor-pointer"
                             onClick={() => { loadInvoiceIntoForm(inv); setEditingInvoice(inv); setInvoiceDialogOpen(true) }}
                           >
-                            <td className="px-4 py-3 text-xs text-muted-foreground whitespace-nowrap">{`${inv.building} - ${inv.roomId} - ${inv.month}`}</td>
+                            <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">{`${inv.building} - ${inv.roomId} - ${inv.month}`}</td>
                             <td className="px-4 py-3 font-medium whitespace-nowrap">{inv.roomId}</td>
                             <td className="px-4 py-3 text-muted-foreground whitespace-nowrap">{inv.building}</td>
                             <td className="px-4 py-3 whitespace-nowrap">{inv.tenantName}</td>
@@ -2974,6 +3242,275 @@ function DashboardContent() {
               </div>
             </div>
           )}
+
+          {view === "transactions" && (() => {
+            const toggleTxBuilding = (b: string) =>
+              setTxBuildings(prev => prev.includes(b) ? prev.filter(x => x !== b) : [...prev, b])
+
+            const baseFiltered = (type?: "INCOME" | "EXPENSE") => transactions.filter(tx => {
+              if (type && tx.type !== type) return false
+              if (txSearch) {
+                const q = txSearch.toLowerCase()
+                const note = tx.note?.toLowerCase() ?? ""
+                const cat = (TX_CATEGORY_LABEL[tx.category] ?? tx.category).toLowerCase()
+                if (!note.includes(q) && !cat.includes(q)) return false
+              }
+              if (txBuildings.length > 0) {
+                const bName = tx.room?.property?.name ?? tx.property?.name ?? ""
+                if (!txBuildings.includes(bName)) return false
+              }
+              if (txFrom) {
+                const d = new Date(tx.date); d.setHours(0,0,0,0)
+                const f = new Date(txFrom); f.setHours(0,0,0,0)
+                if (d < f) return false
+              }
+              if (txTo) {
+                const d = new Date(tx.date); d.setHours(0,0,0,0)
+                const t = new Date(txTo); t.setHours(23,59,59,999)
+                if (d > t) return false
+              }
+              return true
+            })
+
+            const filtered = baseFiltered(txTab === "income" ? "INCOME" : txTab === "expense" ? "EXPENSE" : undefined).slice().sort((a, b) => {
+              if (!txSort) return 0
+              const mul = txSort.dir === "asc" ? 1 : -1
+              if (txSort.col === "amount") return (a.amount - b.amount) * mul
+              return (new Date(a.date).getTime() - new Date(b.date).getTime()) * mul
+            })
+            const countAll     = baseFiltered().length
+            const countIncome  = baseFiltered("INCOME").length
+            const countExpense = baseFiltered("EXPENSE").length
+
+            const allFiltered  = baseFiltered()
+            const totalIncome  = allFiltered.filter(t => t.type === "INCOME").reduce((s, t) => s + t.amount, 0)
+            const totalExpense = allFiltered.filter(t => t.type === "EXPENSE").reduce((s, t) => s + t.amount, 0)
+            const net = totalIncome - totalExpense
+
+            return (
+              <div className="flex flex-1 overflow-hidden">
+                {/* Left: tabs + table */}
+                <div className="flex flex-1 flex-col overflow-hidden min-w-0">
+                  {/* Collapsible: tabs + filter */}
+                  <div className={["overflow-hidden transition-all duration-200", txHeaderVisible ? "max-h-40 opacity-100" : "max-h-0 opacity-0"].join(" ")}>
+                  {/* Tabs */}
+                  <div className="flex items-center border-b px-6">
+                    {([
+                      { key: "all",     label: "Tất cả", count: countAll     },
+                      { key: "income",  label: "Đã thu",  count: countIncome  },
+                      { key: "expense", label: "Đã chi",  count: countExpense },
+                    ] as const).map(t => (
+                      <button
+                        key={t.key}
+                        onClick={() => setTxTab(t.key)}
+                        className={[
+                          "relative flex items-center gap-1.5 px-4 py-3 text-sm font-medium transition-colors",
+                          txTab === t.key
+                            ? "text-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-foreground after:rounded-full"
+                            : "text-muted-foreground hover:text-foreground",
+                        ].join(" ")}
+                      >
+                        {t.label}
+                        <span className={["rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums", txTab === t.key ? "bg-foreground/10 text-foreground" : "bg-muted-foreground/15 text-muted-foreground"].join(" ")}>
+                          {t.count}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Filter bar */}
+                  <div className="flex items-center gap-2 px-6 py-2.5 flex-wrap">
+                    {/* Search */}
+                    <div className="relative shrink-0">
+                      <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
+                      <Input
+                        className="pl-8 h-8 w-56 text-sm"
+                        placeholder="Tìm nội dung giao dịch..."
+                        value={txSearch}
+                        onChange={e => setTxSearch(e.target.value)}
+                      />
+                    </div>
+                    {/* Building filter */}
+                    <Select
+                      value={txBuildings.length === 1 ? txBuildings[0] : txBuildings.length === 0 ? "__all__" : "__multi__"}
+                      onValueChange={v => {
+                        if (v === "__all__") setTxBuildings([])
+                        else setTxBuildings([v])
+                      }}
+                    >
+                      <SelectTrigger size="sm" className="h-8 w-36 shrink-0">
+                        <SelectValue>
+                          {() => txBuildings.length === 0
+                            ? <span className="text-muted-foreground">Tất cả toà</span>
+                            : txBuildings.length === 1 ? txBuildings[0]
+                            : <span>{txBuildings.length} toà</span>
+                          }
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectContent align="start" alignItemWithTrigger={false} sideOffset={4}>
+                        {allBuildings.map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                        <SelectSeparator />
+                        <SelectItem value="__all__" className="text-muted-foreground">Tất cả</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    {/* Date from */}
+                    <Popover open={txDateFromOpen} onOpenChange={setTxDateFromOpen}>
+                      <PopoverTrigger render={
+                        <Button variant="outline" size="sm" className="h-8 w-36 shrink-0 justify-start gap-1.5 font-normal">
+                          <CalendarDays className="size-3.5 shrink-0 text-muted-foreground" />
+                          {txFrom ? <span className="truncate">{txFrom.toLocaleDateString("vi-VN")}</span> : <span className="text-muted-foreground">Từ ngày</span>}
+                        </Button>
+                      } />
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={txFrom}
+                          onSelect={d => { if (d && txTo && d > txTo) setTxTo(d); setTxFrom(d); setTxDateFromOpen(false) }}
+                          captionLayout="dropdown"
+                        />
+                      </PopoverContent>
+                    </Popover>
+
+                    {/* Date to */}
+                    <Popover open={txDateToOpen} onOpenChange={setTxDateToOpen}>
+                      <PopoverTrigger render={
+                        <Button variant="outline" size="sm" className="h-8 w-36 shrink-0 justify-start gap-1.5 font-normal">
+                          <CalendarDays className="size-3.5 shrink-0 text-muted-foreground" />
+                          {txTo ? <span className="truncate">{txTo.toLocaleDateString("vi-VN")}</span> : <span className="text-muted-foreground">Đến ngày</span>}
+                        </Button>
+                      } />
+                      <PopoverContent className="w-auto p-0" align="start">
+                        <Calendar
+                          mode="single"
+                          selected={txTo}
+                          onSelect={d => { if (d && txFrom && d < txFrom) setTxFrom(d); setTxTo(d); setTxDateToOpen(false) }}
+                          captionLayout="dropdown"
+                        />
+                      </PopoverContent>
+                    </Popover>
+
+                    {/* Clear all filters */}
+                    {(txSearch || txBuildings.length > 0 || txFrom || txTo) && (
+                      <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-muted-foreground" onClick={() => { setTxSearch(""); setTxBuildings([]); setTxFrom(undefined); setTxTo(undefined) }}>
+                        <X className="size-3.5" />
+                        Xoá bộ lọc
+                      </Button>
+                    )}
+                  </div>
+                  </div>{/* end collapsible */}
+
+                  {/* Table */}
+                  <div className="flex-1 overflow-auto [overflow-anchor:none]" onScroll={e => {
+                    const y = (e.currentTarget as HTMLDivElement).scrollTop
+                    if (y === 0) setTxHeaderVisible(true)
+                    else if (y > 80) setTxHeaderVisible(false)
+                    txLastScrollY.current = y
+                  }}>
+                    {txLoading ? (
+                      <div className="p-6 space-y-3">
+                        {Array.from({ length: 6 }).map((_, i) => (
+                          <div key={i} className="h-10 rounded-md bg-muted animate-pulse" />
+                        ))}
+                      </div>
+                    ) : filtered.length === 0 ? (
+                      <div className="flex flex-col items-center justify-center py-24 text-muted-foreground gap-3">
+                        <Wallet className="size-10 opacity-20" />
+                        <p className="text-sm">Chưa có giao dịch nào</p>
+                      </div>
+                    ) : (
+                      <table className="w-full text-sm">
+                        <thead className="sticky top-0 z-10 bg-muted border-b">
+                          <tr>
+                            <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground whitespace-nowrap w-10">STT</th>
+                            <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground w-full">Nội dung giao dịch</th>
+                            <th className="px-4 py-3 text-xs font-semibold text-muted-foreground whitespace-nowrap text-right">
+                              <button onClick={() => setTxSort(s => s?.col === "amount" ? (s.dir === "desc" ? { col: "amount", dir: "asc" } : null) : { col: "amount", dir: "desc" })} className="flex items-center gap-1 hover:text-foreground transition-colors ml-auto">
+                                Số tiền
+                                <span className="flex flex-col -gap-0.5">
+                                  <ChevronUp className={["size-3", txSort?.col === "amount" && txSort.dir === "asc" ? "text-foreground" : "text-muted-foreground/40"].join(" ")} />
+                                  <ChevronDown className={["size-3 -mt-1", txSort?.col === "amount" && txSort.dir === "desc" ? "text-foreground" : "text-muted-foreground/40"].join(" ")} />
+                                </span>
+                              </button>
+                            </th>
+                            <th className="text-left px-4 py-3 text-xs font-semibold text-muted-foreground whitespace-nowrap">Toà nhà</th>
+                            <th className="px-4 py-3 text-xs font-semibold text-muted-foreground whitespace-nowrap">
+                              <button onClick={() => setTxSort(s => s?.col === "date" ? (s.dir === "desc" ? { col: "date", dir: "asc" } : null) : { col: "date", dir: "desc" })} className="flex items-center gap-1 hover:text-foreground transition-colors">
+                                Ngày giao dịch
+                                <span className="flex flex-col -gap-0.5">
+                                  <ChevronUp className={["size-3", txSort?.col === "date" && txSort.dir === "asc" ? "text-foreground" : "text-muted-foreground/40"].join(" ")} />
+                                  <ChevronDown className={["size-3 -mt-1", txSort?.col === "date" && txSort.dir === "desc" ? "text-foreground" : "text-muted-foreground/40"].join(" ")} />
+                                </span>
+                              </button>
+                            </th>
+                            <th className="px-4 py-3 w-10" />
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y">
+                          {filtered.map((tx, idx) => (
+                            <tr
+                              key={tx.id}
+                              className="group hover:bg-muted/40 transition-colors cursor-pointer"
+                              onClick={() => handleTxOpenEdit(tx)}
+                            >
+                              <td className="px-4 py-3 text-muted-foreground tabular-nums text-xs w-10">{idx + 1}</td>
+                              <td className="px-4 py-3">
+                                <div className="flex items-center gap-2">
+                                  <span className={["size-6 rounded-full flex items-center justify-center shrink-0", tx.type === "INCOME" ? "bg-emerald-500/10" : "bg-destructive/10"].join(" ")}>
+                                    {tx.type === "INCOME"
+                                      ? <ArrowUpRight className="size-3.5 text-emerald-600 dark:text-emerald-400" />
+                                      : <ArrowDownLeft className="size-3.5 text-destructive" />
+                                    }
+                                  </span>
+                                  <div>
+                                    <p className="text-sm text-muted-foreground leading-tight truncate max-w-[220px]">{tx.note || TX_CATEGORY_LABEL[tx.category] || tx.category}</p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className={["px-4 py-3 text-right font-semibold tabular-nums whitespace-nowrap", tx.type === "INCOME" ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"].join(" ")}>
+                                {tx.type === "INCOME" ? "+" : "-"}{tx.amount.toLocaleString("vi-VN")} ₫
+                              </td>
+                              <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap">
+                                {tx.room?.property?.name ?? tx.property?.name ?? "—"}
+                              </td>
+                              <td className="px-4 py-3 text-sm text-muted-foreground whitespace-nowrap tabular-nums">
+                                {new Date(tx.date).toLocaleDateString("vi-VN")}
+                              </td>
+                              <td className="px-4 py-3 whitespace-nowrap" onClick={e => e.stopPropagation()}>
+                                <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <Button variant="ghost" size="icon" className="text-muted-foreground hover:text-destructive" onClick={() => setTxDeleteConfirm(tx.id)}>
+                                    <Trash2 className="size-4" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right: summary card */}
+                <div className="flex w-72 shrink-0 flex-col gap-5 border-l overflow-y-auto p-5">
+                  <p className="text-sm font-semibold">Tổng quan</p>
+                  {[
+                    { label: "Tổng thu",   value: `${totalIncome.toLocaleString("vi-VN")} ₫`,        icon: <ArrowUpRight className="size-4 text-emerald-500" /> },
+                    { label: "Tổng chi",   value: `${totalExpense.toLocaleString("vi-VN")} ₫`,       icon: <ArrowDownLeft className="size-4 text-destructive" /> },
+                    { label: "Chênh lệch", value: `${Math.abs(net).toLocaleString("vi-VN")} ₫`,      icon: net >= 0 ? <TrendingUp className="size-4 text-emerald-500" /> : <TrendingDown className="size-4 text-destructive" /> },
+                  ].map(({ label, value, icon }) => (
+                    <div key={label} className="flex flex-col gap-1 rounded-md bg-muted/50 px-3 py-3">
+                      <div className="flex items-center gap-1.5">
+                        {icon}
+                        <span className="text-xs text-muted-foreground">{label}</span>
+                      </div>
+                      <span className="text-xl font-bold tabular-nums text-foreground">{value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
 
           {view === "properties" && (
             <div className="flex flex-1 overflow-hidden">
@@ -3246,6 +3783,320 @@ function DashboardContent() {
         </SidebarInset>
         <SidebarAwareToaster />
       </SidebarProvider>
+
+      {/* Ghi thu / Ghi chi dialog */}
+      <Dialog open={txDialogOpen} onOpenChange={o => { if (!o) setTxDialogOpen(false) }}>
+        <DialogContent showCloseButton className="w-full gap-0 p-0 overflow-hidden">
+          <div className="flex flex-col min-h-0">
+            {/* Header */}
+            <div className="flex items-center gap-3 px-6 pt-6 pb-4 shrink-0">
+              <div className={["flex size-9 shrink-0 items-center justify-center rounded-full", txDialogType === "INCOME" ? "bg-emerald-500/10" : "bg-destructive/10"].join(" ")}>
+                {txDialogType === "INCOME"
+                  ? <ArrowUpRight className="size-4 text-emerald-600 dark:text-emerald-400" />
+                  : <ArrowDownLeft className="size-4 text-destructive" />
+                }
+              </div>
+              <div>
+                <DialogTitle className="text-base font-semibold">{txDialogType === "INCOME" ? "Ghi thu" : "Ghi chi"}</DialogTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">{txDialogType === "INCOME" ? "Ghi nhận khoản tiền thu được" : "Ghi nhận khoản chi phí phát sinh"}</p>
+              </div>
+            </div>
+
+            {/* Form */}
+            <div className="flex flex-col gap-4 border-t px-6 py-5 overflow-y-auto">
+              {/* Amount */}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="tx-amount">Số tiền (₫)</Label>
+                <Input
+                  id="tx-amount"
+                  placeholder="0"
+                  value={txForm.amount}
+                  onChange={e => setTxForm(f => ({ ...f, amount: e.target.value }))}
+                  className={["text-base tabular-nums h-9", txFormErrors.amount ? "border-destructive" : ""].join(" ")}
+                />
+                {txFormErrors.amount && <p className="text-xs text-destructive">Vui lòng nhập số tiền hợp lệ</p>}
+              </div>
+
+              {/* Building */}
+              <div className="flex flex-col gap-1.5">
+                <Label>Toà nhà</Label>
+                <Select
+                  value={txForm.building}
+                  onValueChange={v => setTxForm(f => ({ ...f, building: v === "__none__" ? "" : (v ?? ""), roomId: "" }))}
+                >
+                  <SelectTrigger className={["h-9 w-full", txFormErrors.building ? "border-destructive" : ""].join(" ")}>
+                    <SelectValue>
+                      {() => txForm.building ? txForm.building : <span className="text-muted-foreground">Chọn toà nhà</span>}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent align="start" alignItemWithTrigger={false} sideOffset={4}>
+                    {allBuildings.map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {txFormErrors.building && <p className="text-xs text-destructive">Vui lòng chọn toà nhà</p>}
+              </div>
+
+              {/* Room (optional, shown when building selected) */}
+              {txForm.building && (propertyRooms[txForm.building] ?? []).length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <Label>Phòng <span className="text-muted-foreground font-normal">(tuỳ chọn)</span></Label>
+                  <Select
+                    value={txForm.roomId || "__none__"}
+                    onValueChange={v => setTxForm(f => ({ ...f, roomId: v === "__none__" ? "" : (v ?? "") }))}
+                  >
+                    <SelectTrigger className="h-9 w-full">
+                      <SelectValue>
+                        {() => {
+                          const room = (propertyRooms[txForm.building] ?? []).find(r => r._dbId === txForm.roomId)
+                          return room ? room.id : <span className="text-muted-foreground">Không gắn phòng cụ thể</span>
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="start" alignItemWithTrigger={false} sideOffset={4}>
+                      <SelectItem value="__none__" className="text-muted-foreground">Không gắn phòng cụ thể</SelectItem>
+                      <SelectSeparator />
+                      {(propertyRooms[txForm.building] ?? []).map(r => (
+                        <SelectItem key={r._dbId ?? r.id} value={r._dbId ?? r.id}>{r.id}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {/* Date */}
+              <div className="flex flex-col gap-1.5">
+                <Label>Ngày giao dịch</Label>
+                <Popover open={txFormDateOpen} onOpenChange={setTxFormDateOpen}>
+                  <PopoverTrigger render={
+                    <Button variant="outline" className="h-9 w-full justify-start gap-2 font-normal">
+                      <CalendarDays className="size-3.5 text-muted-foreground shrink-0" />
+                      {txForm.date
+                        ? new Date(txForm.date).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" })
+                        : <span className="text-muted-foreground">Chọn ngày</span>
+                      }
+                    </Button>
+                  } />
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar
+                      mode="single"
+                      selected={txForm.date ? new Date(txForm.date) : undefined}
+                      onSelect={d => { if (d) { setTxForm(f => ({ ...f, date: d.toISOString().slice(0, 10) })); setTxFormDateOpen(false) } }}
+                      captionLayout="dropdown"
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              {/* Note */}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="tx-note">Nội dung giao dịch</Label>
+                <textarea
+                  id="tx-note"
+                  rows={3}
+                  placeholder={txDialogType === "INCOME" ? "VD: Tiền thuê tháng 5 phòng 101" : "VD: Sửa điều hoà phòng 301"}
+                  value={txForm.note}
+                  onChange={e => setTxForm(f => ({ ...f, note: e.target.value }))}
+                  className={["flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none", txFormErrors.note ? "border-destructive" : "border-input"].join(" ")}
+                />
+                {txFormErrors.note && <p className="text-xs text-destructive">Vui lòng nhập nội dung giao dịch</p>}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-2 border-t px-6 py-4 shrink-0">
+              <Button variant="outline" onClick={() => setTxDialogOpen(false)}>Huỷ</Button>
+              <Button
+                onClick={handleTxSubmit}
+                disabled={txSubmitting}
+                className="gap-1.5"
+              >
+                {txSubmitting && <LoaderCircle className="size-3.5 animate-spin" />}
+                Xác nhận
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Transaction detail / edit dialog */}
+      <Dialog open={txDetailOpen} onOpenChange={o => { if (!o) { setTxDetailOpen(false); setTxEditing(null) } }}>
+        <DialogContent showCloseButton className="w-full gap-0 p-0 overflow-hidden">
+          <div className="flex flex-col min-h-0">
+            <div className="flex items-center gap-3 px-6 pt-6 pb-4 shrink-0">
+              <div className={["flex size-9 shrink-0 items-center justify-center rounded-full", txEditing?.type === "INCOME" ? "bg-emerald-500/10" : "bg-destructive/10"].join(" ")}>
+                {txEditing?.type === "INCOME"
+                  ? <ArrowUpRight className="size-4 text-emerald-600 dark:text-emerald-400" />
+                  : <ArrowDownLeft className="size-4 text-destructive" />
+                }
+              </div>
+              <div>
+                <DialogTitle className="text-base font-semibold">Chi tiết giao dịch</DialogTitle>
+                <p className="text-xs text-muted-foreground mt-0.5">{txEditing?.type === "INCOME" ? "Khoản thu" : "Khoản chi"} · {txEditing ? new Date(txEditing.date).toLocaleDateString("vi-VN") : ""}</p>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-4 border-t px-6 py-5 overflow-y-auto">
+              {txEditing?.invoiceId && (
+                <Alert>
+                  <Info className="size-4" />
+                  <AlertTitle>Giao dịch từ hoá đơn</AlertTitle>
+                  <AlertDescription>
+                    Giao dịch này được tạo tự động từ hoá đơn. Để chỉnh sửa, vui lòng{" "}
+                    <button
+                      className="underline underline-offset-2 hover:text-foreground transition-colors"
+                      onClick={() => {
+                        const inv = invoices.find(i => i.id === txEditing.invoiceId)
+                        if (!inv) return
+                        setTxDetailOpen(false)
+                        setTxEditing(null)
+                        loadInvoiceIntoForm(inv)
+                        setEditingInvoice(inv)
+                        setInvoiceDialogOpen(true)
+                      }}
+                    >
+                      mở hoá đơn
+                    </button>.
+                  </AlertDescription>
+                </Alert>
+              )}
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="txe-amount">Số tiền (₫)</Label>
+                <Input
+                  id="txe-amount"
+                  placeholder="0"
+                  value={txForm.amount}
+                  onChange={e => setTxForm(f => ({ ...f, amount: e.target.value }))}
+                  disabled={!!txEditing?.invoiceId}
+                  className={["text-base tabular-nums h-9", txFormErrors.amount ? "border-destructive" : ""].join(" ")}
+                />
+                {txFormErrors.amount && <p className="text-xs text-destructive">Vui lòng nhập số tiền hợp lệ</p>}
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label>Toà nhà</Label>
+                <Select value={txForm.building} onValueChange={v => setTxForm(f => ({ ...f, building: v ?? "", roomId: "" }))} disabled={!!txEditing?.invoiceId}>
+                  <SelectTrigger className={["h-9 w-full", txFormErrors.building ? "border-destructive" : ""].join(" ")}>
+                    <SelectValue>
+                      {() => txForm.building ? txForm.building : <span className="text-muted-foreground">Chọn toà nhà</span>}
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectContent align="start" alignItemWithTrigger={false} sideOffset={4}>
+                    {allBuildings.map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+                {txFormErrors.building && <p className="text-xs text-destructive">Vui lòng chọn toà nhà</p>}
+              </div>
+
+              {txForm.building && (propertyRooms[txForm.building] ?? []).length > 0 && (
+                <div className="flex flex-col gap-1.5">
+                  <Label>Phòng <span className="text-muted-foreground font-normal">(tuỳ chọn)</span></Label>
+                  <Select
+                    value={txForm.roomId || "__none__"}
+                    onValueChange={v => setTxForm(f => ({ ...f, roomId: v === "__none__" ? "" : (v ?? "") }))}
+                    disabled={!!txEditing?.invoiceId}
+                  >
+                    <SelectTrigger className="h-9 w-full">
+                      <SelectValue>
+                        {() => {
+                          const room = (propertyRooms[txForm.building] ?? []).find(r => r._dbId === txForm.roomId)
+                          return room ? room.id : <span className="text-muted-foreground">Không gắn phòng cụ thể</span>
+                        }}
+                      </SelectValue>
+                    </SelectTrigger>
+                    <SelectContent align="start" alignItemWithTrigger={false} sideOffset={4}>
+                      <SelectItem value="__none__" className="text-muted-foreground">Không gắn phòng cụ thể</SelectItem>
+                      <SelectSeparator />
+                      {(propertyRooms[txForm.building] ?? []).map(r => (
+                        <SelectItem key={r._dbId ?? r.id} value={r._dbId ?? r.id}>{r.id}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1.5">
+                <Label>Ngày giao dịch</Label>
+                <Popover open={txEditing?.invoiceId ? false : txFormDateOpen} onOpenChange={txEditing?.invoiceId ? undefined : setTxFormDateOpen}>
+                  <PopoverTrigger render={
+                    <Button variant="outline" className="h-9 w-full justify-start gap-2 font-normal" disabled={!!txEditing?.invoiceId}>
+                      <CalendarDays className="size-3.5 text-muted-foreground shrink-0" />
+                      {txForm.date
+                        ? new Date(txForm.date).toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit", year: "numeric" })
+                        : <span className="text-muted-foreground">Chọn ngày</span>
+                      }
+                    </Button>
+                  } />
+                  <PopoverContent className="w-auto p-0" align="start">
+                    <Calendar
+                      mode="single"
+                      selected={txForm.date ? new Date(txForm.date) : undefined}
+                      onSelect={d => { if (d) { setTxForm(f => ({ ...f, date: d.toISOString().slice(0, 10) })); setTxFormDateOpen(false) } }}
+                      captionLayout="dropdown"
+                    />
+                  </PopoverContent>
+                </Popover>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor="txe-note">Nội dung giao dịch</Label>
+                <textarea
+                  id="txe-note"
+                  rows={3}
+                  placeholder={txEditing?.type === "INCOME" ? "VD: Tiền thuê tháng 5 phòng 101" : "VD: Sửa điều hoà phòng 301"}
+                  value={txForm.note}
+                  disabled={!!txEditing?.invoiceId}
+                  onChange={e => setTxForm(f => ({ ...f, note: e.target.value }))}
+                  className={["flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring resize-none disabled:opacity-50 disabled:cursor-not-allowed", txFormErrors.note ? "border-destructive" : "border-input"].join(" ")}
+                />
+                {txFormErrors.note && <p className="text-xs text-destructive">Vui lòng nhập nội dung giao dịch</p>}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between border-t px-6 py-4 shrink-0">
+              {!txEditing?.invoiceId && (
+                <Button
+                  variant="outline"
+                  className="gap-1.5 text-destructive border-destructive/40 hover:bg-destructive/5 hover:text-destructive"
+                  onClick={() => setTxDeleteConfirm(txEditing!.id)}
+                >
+                  <Trash2 className="size-3.5" />
+                  Xoá giao dịch
+                </Button>
+              )}
+              <div className={["flex items-center gap-2", txEditing?.invoiceId ? "ml-auto" : ""].join(" ")}>
+                <Button variant="outline" onClick={() => setTxDetailOpen(false)}>Đóng</Button>
+                {!txEditing?.invoiceId && (
+                  <Button onClick={handleTxUpdate} disabled={txActionLoading} className="gap-1.5">
+                    {txActionLoading && <LoaderCircle className="size-3.5 animate-spin" />}
+                    Lưu thay đổi
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Transaction delete confirm */}
+      <AlertDialog open={!!txDeleteConfirm} onOpenChange={o => { if (!o) setTxDeleteConfirm(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Xoá giao dịch?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Hành động này không thể hoàn tác. Giao dịch sẽ bị xoá vĩnh viễn.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Huỷ</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive hover:bg-destructive/90 text-white"
+              onClick={() => txDeleteConfirm && handleTxDelete(txDeleteConfirm)}
+            >
+              Xoá
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Add building dialog */}
       <Dialog open={addBuildingOpen} onOpenChange={(o) => { setAddBuildingOpen(o); if (!o) resetBuildingForm() }}>
@@ -4268,26 +5119,28 @@ function DashboardContent() {
                     {editingInvoice ? (
                       <>
                         {invoiceFormDirty && (
-                          <Button variant="outline" size="lg" disabled={isSubmitting} onClick={() => handleUpdateInvoice(false)}>
-                            {isSubmitting && <LoaderCircle className="animate-spin" />}
+                          <Button variant="outline" size="lg" disabled={!!invoiceLoadingBtn} onClick={() => handleUpdateInvoice(false)}>
+                            {invoiceLoadingBtn === "save" && <LoaderCircle className="animate-spin" />}
                             Lưu thay đổi
                           </Button>
                         )}
                         {editingInvoice.status === "draft" && (
-                          <Button size="lg" variant="default" disabled={isSubmitting} onClick={() => handleUpdateInvoice(true)}>
-                            {isSubmitting && <LoaderCircle className="animate-spin" />}
+                          <Button size="lg" variant="default" disabled={!!invoiceLoadingBtn} onClick={() => handleUpdateInvoice(true)}>
+                            {invoiceLoadingBtn === "publish" && <LoaderCircle className="animate-spin" />}
                             Phát hành
                           </Button>
                         )}
                         {editingInvoice.status === "pending" && (
-                          <Button size="lg" variant="default" disabled={isSubmitting} onClick={() => {
+                          <Button size="lg" variant="default" disabled={!!invoiceLoadingBtn} onClick={() => {
+                            setInvoiceLoadingBtn("pay")
                             handleInvoiceAction(editingInvoice.id, "pay")
                             setInvoiceDialogOpen(false)
                             setEditingInvoice(null)
                             resetInvoiceForm()
                             setInvoiceFromSheet(false)
+                            setInvoiceLoadingBtn(null)
                           }}>
-                            {isSubmitting && <LoaderCircle className="animate-spin" />}
+                            {invoiceLoadingBtn === "pay" && <LoaderCircle className="animate-spin" />}
                             Đã thu
                           </Button>
                         )}
@@ -4295,13 +5148,13 @@ function DashboardContent() {
                     ) : (
                       <>
                         {!invoiceFromSheet && (
-                          <Button variant="outline" size="lg" disabled={isSubmitting} onClick={() => handleSaveInvoice("draft")}>
-                            {isSubmitting && <LoaderCircle className="animate-spin" />}
+                          <Button variant="outline" size="lg" disabled={!!invoiceLoadingBtn} onClick={() => handleSaveInvoice("draft")}>
+                            {invoiceLoadingBtn === "draft" && <LoaderCircle className="animate-spin" />}
                             Lưu nháp
                           </Button>
                         )}
-                        <Button size="lg" disabled={isSubmitting} onClick={() => handleSaveInvoice("pending")}>
-                          {isSubmitting && <LoaderCircle className="animate-spin" />}
+                        <Button size="lg" disabled={!!invoiceLoadingBtn} onClick={() => handleSaveInvoice("pending")}>
+                          {invoiceLoadingBtn === "publish" && <LoaderCircle className="animate-spin" />}
                           Phát hành
                         </Button>
                       </>
