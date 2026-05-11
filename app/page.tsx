@@ -3335,7 +3335,7 @@ function DashboardContent() {
                       value={txBuildings.length === 1 ? txBuildings[0] : txBuildings.length === 0 ? "__all__" : "__multi__"}
                       onValueChange={v => {
                         if (v === "__all__") setTxBuildings([])
-                        else setTxBuildings([v])
+                        else if (v) setTxBuildings([v])
                       }}
                     >
                       <SelectTrigger size="sm" className="h-8 w-36 shrink-0">
