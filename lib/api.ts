@@ -51,6 +51,7 @@ export interface ApiContract {
   endDate: string
   status: 'ACTIVE' | 'EXPIRED' | 'TERMINATED'
   vehicles: number
+  occupants: number
   tenant: ApiTenant
 }
 
@@ -131,7 +132,7 @@ export const contractsApi = {
   list: (status?: string) => req<ApiContract[]>(`/contracts${status ? `?status=${status}` : ''}`),
   create: (data: {
     roomId: string; tenantId: string; rent: number
-    months: number; signDate: string; vehicles?: number
+    months: number; signDate: string; vehicles?: number; occupants?: number
   }) => req<ApiContract>('/contracts', { method: 'POST', body: JSON.stringify(data) }),
   terminate: (id: string) =>
     req<ApiContract>(`/contracts/${id}`, { method: 'PATCH', body: JSON.stringify({ status: 'TERMINATED' }) }),

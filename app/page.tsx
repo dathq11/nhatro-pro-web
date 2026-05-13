@@ -222,6 +222,7 @@ interface RoomData {
   _contractId?: string  // active contract DB id
   status: RoomStatus
   tenants?: TenantInfo[]
+  occupants?: number
   vehicles?: number
   rent: number
   contractMonths?: number
@@ -378,6 +379,7 @@ const mapApiRoom = (r: ApiRoom): RoomData => {
     status: roomStatus,
     rent: contract?.rent ?? r.rent,
     vehicles: contract?.vehicles,
+    occupants: contract?.occupants ?? (contract ? 1 : undefined),
     tenants: contract
       ? [{ name: contract.tenant.name ?? "", cccd: contract.tenant.cccd ?? "", phone: contract.tenant.phone }]
       : undefined,
@@ -1124,6 +1126,7 @@ function DashboardContent() {
             months: parseInt(contractForm.months),
             signDate: contractForm.signDate.toISOString(),
             vehicles: contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
+            occupants: Math.max(1, parseInt(contractForm.numPeople) || 1),
           })
         }
         // Optimistically add room so it appears immediately
@@ -1133,6 +1136,7 @@ function DashboardContent() {
           status: addStatus,
           rent: createContract ? parseInt(contractForm.rent) : 0,
           vehicles: createContract && contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
+          occupants: createContract ? Math.max(1, parseInt(contractForm.numPeople) || 1) : undefined,
           tenants: createContract ? tenants.map(t => ({ name: t.name.trim() || undefined, cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
           contractMonths: addContractMonths,
           contractSignDate: addContractSignDate,
@@ -1152,6 +1156,7 @@ function DashboardContent() {
         status: addStatus,
         rent: createContract ? parseInt(contractForm.rent) : 0,
         vehicles: createContract && contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
+        occupants: createContract ? Math.max(1, parseInt(contractForm.numPeople) || 1) : undefined,
         tenants: createContract ? tenants.map(t => ({ name: t.name.trim() || undefined, cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
         contractMonths: addContractMonths,
         contractSignDate: addContractSignDate,
@@ -1183,7 +1188,7 @@ function DashboardContent() {
     setContractSwitchLocked(forceContract)
     setContractForm({
       rent: hasContract ? String(room.rent) : "",
-      numPeople: hasContract && room.tenants?.length ? String(room.tenants.length) : "1",
+      numPeople: hasContract ? String(room.occupants ?? room.tenants?.length ?? 1) : "1",
       vehicles: hasContract && room.vehicles ? String(room.vehicles) : "",
       months: hasContract && room.contractMonths ? String(room.contractMonths) : "",
       signDate: hasContract ? room.contractSignDate : undefined,
@@ -1253,6 +1258,7 @@ function DashboardContent() {
             months: parseInt(contractForm.months),
             signDate: contractForm.signDate.toISOString(),
             vehicles: contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
+            occupants: Math.max(1, parseInt(contractForm.numPeople) || 1),
           })
         }
 
@@ -1263,6 +1269,7 @@ function DashboardContent() {
           status: computedStatus,
           rent: withContract ? parseInt(contractForm.rent) : 0,
           vehicles: withContract && contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
+          occupants: withContract ? Math.max(1, parseInt(contractForm.numPeople) || 1) : undefined,
           tenants: withContract ? tenants.map(t => ({ name: t.name.trim() || undefined, cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
           contractMonths,
           contractSignDate,
@@ -1288,6 +1295,7 @@ function DashboardContent() {
         status: computedStatus,
         rent: withContract ? parseInt(contractForm.rent) : 0,
         vehicles: withContract && contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
+        occupants: withContract ? Math.max(1, parseInt(contractForm.numPeople) || 1) : undefined,
         tenants: withContract ? tenants.map(t => ({ name: t.name.trim() || undefined, cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
         contractMonths,
         contractSignDate,
@@ -3653,7 +3661,7 @@ function DashboardContent() {
                               <div className="flex items-center gap-1.5">
                                 <Users className="size-3.5 shrink-0 text-muted-foreground" />
                                 <span className="text-xs text-muted-foreground">
-                                  {room.tenants?.length ? `${room.tenants.length} người` : "0 người"}
+                                  {room.occupants ? `${room.occupants} người` : "0 người"}
                                 </span>
                               </div>
 
@@ -4718,7 +4726,7 @@ function DashboardContent() {
                     <div className="grid grid-cols-2 gap-x-4 gap-y-3">
                       {[
                         { icon: DollarSign, label: "Giá thuê",     value: `${room.rent.toLocaleString("vi-VN")} ₫/tháng` },
-                        { icon: Users,      label: "Số người",     value: room.tenants?.length ? `${room.tenants.length} người` : "0 người" },
+                        { icon: Users,      label: "Số người",     value: room.occupants ? `${room.occupants} người` : "0 người" },
                         { icon: Car,        label: "Số xe",        value: `${room.vehicles ?? 0} xe` },
                         { icon: Clock,      label: "Hết hợp đồng", value: getContractEnd(room) ?? "—" },
                       ].map(({ icon: Icon, label, value }) => (
