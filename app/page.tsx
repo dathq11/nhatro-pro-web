@@ -537,6 +537,14 @@ function DashboardContent() {
       localStorage.setItem(TX_CACHE_KEY, JSON.stringify({ ...cache, [txId]: entry }))
     } catch { /* ignore */ }
   }
+  const removeTxCache = (txId: string) => {
+    try {
+      const cache = readTxCache()
+      if (!(txId in cache)) return
+      delete cache[txId]
+      localStorage.setItem(TX_CACHE_KEY, JSON.stringify(cache))
+    } catch { /* ignore */ }
+  }
 
   const loadTransactions = React.useCallback(async () => {
     setTxLoading(true)
@@ -683,13 +691,16 @@ function DashboardContent() {
 
   const handleTxDelete = async (id: string) => {
     setTxActionLoading(true)
-    setTransactions(prev => prev.filter(t => t.id !== id))
-    setTxDeleteConfirm(null)
-    setTxDetailOpen(false)
-    toast.success("Đã xoá giao dịch")
     try {
       await transactionsApi.remove(id)
-    } catch { /* best-effort */ } finally {
+      setTransactions(prev => prev.filter(t => t.id !== id))
+      removeTxCache(id)
+      setTxDeleteConfirm(null)
+      setTxDetailOpen(false)
+      toast.success("Đã xoá giao dịch")
+    } catch (err: any) {
+      toast.error(err.message ?? "Lỗi khi xoá giao dịch")
+    } finally {
       setTxActionLoading(false)
     }
   }
