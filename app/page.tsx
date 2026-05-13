@@ -911,9 +911,26 @@ function DashboardContent() {
     setAddBuildingOpen(true)
   }
 
-  const handleBuildingPhotoChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleBuildingPhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? [])
-    setBuildingPhotoPreviews(files.map(f => URL.createObjectURL(f)))
+    e.target.value = ""
+    if (!files.length) return
+
+    const previews = await Promise.all(
+      files.map(file => new Promise<string>((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = () => resolve(String(reader.result ?? ""))
+        reader.onerror = () => reject(reader.error)
+        reader.readAsDataURL(file)
+      }))
+    ).catch(() => null)
+
+    if (!previews) {
+      toast.error("Không thể đọc ảnh đã chọn")
+      return
+    }
+
+    setBuildingPhotoPreviews(prev => [...prev, ...previews.filter(Boolean)])
   }
 
   const handleDateSelect = (d: Date | undefined) => {
