@@ -215,7 +215,7 @@ const TX_CATEGORY_LABEL: Record<string, string> = {
 }
 
 type RoomStatus = "occupied" | "vacant" | "unpaid" | "expiring" | "expired"
-interface TenantInfo { name: string; cccd?: string | null; phone?: string }
+interface TenantInfo { name?: string | null; cccd?: string | null; phone?: string }
 interface RoomData {
   id: string        // tên phòng (P.101)
   _dbId?: string    // DB id từ API
@@ -379,7 +379,7 @@ const mapApiRoom = (r: ApiRoom): RoomData => {
     rent: contract?.rent ?? r.rent,
     vehicles: contract?.vehicles,
     tenants: contract
-      ? [{ name: contract.tenant.name, cccd: contract.tenant.cccd ?? "", phone: contract.tenant.phone }]
+      ? [{ name: contract.tenant.name ?? "", cccd: contract.tenant.cccd ?? "", phone: contract.tenant.phone }]
       : undefined,
     contractMonths: contract?.months,
     contractSignDate: contract ? new Date(contract.signDate) : undefined,
@@ -1089,7 +1089,6 @@ function DashboardContent() {
       if (!contractForm.months.trim()) cErrors.months = true
       if (!contractForm.signDate) cErrors.signDate = true
       tenants.forEach((t, i) => {
-        if (!t.name.trim()) cErrors[`tenant_name_${i}`] = true
       })
       if (Object.keys(cErrors).length) { setContractFormErrors(cErrors); return }
     }
@@ -1114,7 +1113,7 @@ function DashboardContent() {
         if (createContract && contractForm.signDate) {
           const primaryTenant = tenants[0]
           const createdTenant = await tenantsApi.create({
-            name: primaryTenant.name.trim(),
+            ...(primaryTenant.name.trim() ? { name: primaryTenant.name.trim() } : {}),
             ...(primaryTenant.cccd.trim() ? { cccd: primaryTenant.cccd.trim() } : {}),
             phone: primaryTenant.phone.trim() || undefined,
           })
@@ -1134,7 +1133,7 @@ function DashboardContent() {
           status: addStatus,
           rent: createContract ? parseInt(contractForm.rent) : 0,
           vehicles: createContract && contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
-          tenants: createContract ? tenants.map(t => ({ name: t.name.trim(), cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
+          tenants: createContract ? tenants.map(t => ({ name: t.name.trim() || undefined, cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
           contractMonths: addContractMonths,
           contractSignDate: addContractSignDate,
         }
@@ -1153,7 +1152,7 @@ function DashboardContent() {
         status: addStatus,
         rent: createContract ? parseInt(contractForm.rent) : 0,
         vehicles: createContract && contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
-        tenants: createContract ? tenants.map(t => ({ name: t.name.trim(), cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
+        tenants: createContract ? tenants.map(t => ({ name: t.name.trim() || undefined, cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
         contractMonths: addContractMonths,
         contractSignDate: addContractSignDate,
       }
@@ -1190,7 +1189,7 @@ function DashboardContent() {
       signDate: hasContract ? room.contractSignDate : undefined,
     })
     setTenants(hasContract && room.tenants?.length
-      ? room.tenants.map(t => ({ name: t.name, cccd: t.cccd ?? "", phone: t.phone ?? "" }))
+      ? room.tenants.map(t => ({ name: t.name ?? "", cccd: t.cccd ?? "", phone: t.phone ?? "" }))
       : [{ name: "", cccd: "", phone: "" }]
     )
     setRoomErrors({})
@@ -1212,7 +1211,6 @@ function DashboardContent() {
       if (!contractForm.months.trim()) cErrors.months = true
       if (!contractForm.signDate) cErrors.signDate = true
       tenants.forEach((t, i) => {
-        if (!t.name.trim()) cErrors[`tenant_name_${i}`] = true
       })
       if (Object.keys(cErrors).length) { setContractFormErrors(cErrors); return }
     }
@@ -1244,7 +1242,7 @@ function DashboardContent() {
           }
           const primaryTenant = tenants[0]
           const createdTenant = await tenantsApi.create({
-            name: primaryTenant.name.trim(),
+            ...(primaryTenant.name.trim() ? { name: primaryTenant.name.trim() } : {}),
             ...(primaryTenant.cccd.trim() ? { cccd: primaryTenant.cccd.trim() } : {}),
             phone: primaryTenant.phone.trim() || undefined,
           })
@@ -1265,7 +1263,7 @@ function DashboardContent() {
           status: computedStatus,
           rent: withContract ? parseInt(contractForm.rent) : 0,
           vehicles: withContract && contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
-          tenants: withContract ? tenants.map(t => ({ name: t.name.trim(), cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
+          tenants: withContract ? tenants.map(t => ({ name: t.name.trim() || undefined, cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
           contractMonths,
           contractSignDate,
         }
@@ -1290,7 +1288,7 @@ function DashboardContent() {
         status: computedStatus,
         rent: withContract ? parseInt(contractForm.rent) : 0,
         vehicles: withContract && contractForm.vehicles.trim() ? parseInt(contractForm.vehicles) : 0,
-        tenants: withContract ? tenants.map(t => ({ name: t.name.trim(), cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
+        tenants: withContract ? tenants.map(t => ({ name: t.name.trim() || undefined, cccd: t.cccd.trim() || undefined, phone: t.phone.trim() })) : undefined,
         contractMonths,
         contractSignDate,
       }
@@ -1743,7 +1741,7 @@ function DashboardContent() {
     }
 
     const room = (propertyRooms[building] ?? []).find(r => r.id === roomId)
-    const tenantName = room?.tenants?.[0]?.name ?? "—"
+    const tenantName = room?.tenants?.[0]?.name || "—"
     const { rent, elecKwh, elecPrice, elecAmt, waterM3, waterPrice, waterAmt, internetAmt, serviceAmt, total } = calcInvoiceTotal()
 
     const roomDbId = room?._dbId
@@ -1837,7 +1835,7 @@ function DashboardContent() {
     }
 
     const room = (propertyRooms[building] ?? []).find(r => r.id === roomId)
-    const tenantName = room?.tenants?.[0]?.name ?? editingInvoice.tenantName
+    const tenantName = room?.tenants?.[0]?.name || editingInvoice.tenantName
     const { rent, elecKwh, elecPrice, elecAmt, waterM3, waterPrice, waterAmt, internetAmt, serviceAmt, total } = calcInvoiceTotal()
 
     // Mock invoices have IDs like "inv-{timestamp}" (all digits after dash, length < 25)
@@ -4321,13 +4319,12 @@ function DashboardContent() {
                   <div key={i} className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3">
                     <p className="text-xs font-medium text-muted-foreground">Người ở {i + 1}</p>
                     <div className="flex flex-col gap-1.5">
-                      <Label htmlFor={`c-tenant-name-${i}`}>Họ và tên</Label>
+                      <Label htmlFor={`c-tenant-name-${i}`}>Họ và tên <span className="text-xs font-normal text-muted-foreground">(không bắt buộc)</span></Label>
                       <Input
                         id={`c-tenant-name-${i}`}
                         placeholder="Nguyễn Văn A"
                         value={tenant.name}
                         onChange={e => setTenants(prev => prev.map((t, idx) => idx === i ? { ...t, name: e.target.value } : t))}
-                        className={contractFormErrors[`tenant_name_${i}`] ? "border-destructive" : ""}
                       />
                     </div>
                     <div className="flex flex-col gap-1.5">
@@ -4474,10 +4471,10 @@ function DashboardContent() {
                       <div key={i} className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3">
                         <p className="text-xs font-medium text-muted-foreground">Người ở {i + 1}</p>
                         <div className="flex flex-col gap-1.5">
-                          <Label htmlFor={`er-tenant-name-${i}`}>Họ và tên</Label>
+                          <Label htmlFor={`er-tenant-name-${i}`}>Họ và tên <span className="text-xs font-normal text-muted-foreground">(không bắt buộc)</span></Label>
                           <Input id={`er-tenant-name-${i}`} placeholder="Nguyễn Văn A" value={tenant.name}
                             onChange={e => setTenants(prev => prev.map((t, idx) => idx === i ? { ...t, name: e.target.value } : t))}
-                            className={contractFormErrors[`tenant_name_${i}`] ? "border-destructive" : ""} />
+                          />
                         </div>
                         <div className="flex flex-col gap-1.5">
                           <Label htmlFor={`er-tenant-cccd-${i}`}>Số căn cước công dân <span className="text-xs font-normal text-muted-foreground">(không bắt buộc)</span></Label>
@@ -4744,7 +4741,7 @@ function DashboardContent() {
                         <div className="flex flex-col gap-2">
                           {room.tenants.map((t, i) => (
                             <div key={i} className="flex flex-col rounded-lg bg-muted/50 p-3">
-                              <p className="text-sm font-medium">{t.name}</p>
+                              <p className="text-sm font-medium">{t.name || "—"}</p>
                               {t.phone && <p className="text-xs text-muted-foreground">SĐT: {t.phone}</p>}
                               {t.cccd && <p className="text-xs text-muted-foreground">CCCD: {t.cccd}</p>}
                             </div>
@@ -5058,7 +5055,7 @@ function DashboardContent() {
                   const roomId = invoiceForm.roomKey ? invoiceForm.roomKey.split("||")[0] : ""
                   const building = invoiceForm.building
                   const room = roomId ? (propertyRooms[building] ?? []).find(r => r.id === roomId) : null
-                  const tenantName = room?.tenants?.[0]?.name ?? "—"
+                  const tenantName = room?.tenants?.[0]?.name || "—"
                   const previewNum = roomId ? `${building} - ${roomId} - T${invoiceForm.month}/${invoiceForm.year}` : "— Chọn toà và phòng —"
                   return (
                     <div className="p-5 flex flex-col gap-4 text-sm">

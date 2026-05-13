@@ -36,7 +36,7 @@ export interface ApiProperty {
 
 export interface ApiTenant {
   id: string
-  name: string
+  name?: string | null
   cccd?: string | null
   phone?: string
 }
