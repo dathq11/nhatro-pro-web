@@ -8,7 +8,7 @@ export function isAuthenticated(): boolean {
 }
 
 export function login(username: string, password: string): boolean {
-  if (username === "***" && password === "***") {
+  if (username === "thuenhapro" && password === "20266886") {
     localStorage.setItem(AUTH_KEY, "1")
     return true
   }

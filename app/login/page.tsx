@@ -25,7 +25,7 @@ export default function LoginPage() {
     setError("")
     setLoading(true)
     await new Promise((r) => setTimeout(r, 400))
-    const ok = login(username, password)
+    const ok = await login(username, password)
     if (ok) {
       router.replace("/")
     } else {
