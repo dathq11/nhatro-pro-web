@@ -1812,7 +1812,7 @@ function DashboardContent() {
     toast.success(status === "pending" ? "Hoá đơn đã được phát hành" : "Đã lưu nháp hoá đơn")
   }
 
-  const handleUpdateInvoice = async (publishNow = false) => {
+  const handleUpdateInvoice = async (publishNow = false, payNow = false) => {
     if (!editingInvoice) return
     const errs: Record<string, boolean> = {}
     if (!invoiceForm.building) errs.building = true
@@ -1866,6 +1866,9 @@ function DashboardContent() {
         await invoicesApi.update(editingInvoice.id, updatePayload)
         if (publishNow && editingInvoice.status === "draft") {
           await invoicesApi.issue(editingInvoice.id)
+        }
+        if (payNow && editingInvoice.status === "pending") {
+          await invoicesApi.markPaid(editingInvoice.id)
         }
         await loadData()
       } catch (err: any) {
@@ -5163,12 +5166,7 @@ function DashboardContent() {
                         {editingInvoice.status === "pending" && (
                           <Button size="lg" variant="default" disabled={!!invoiceLoadingBtn} onClick={() => {
                             setInvoiceLoadingBtn("pay")
-                            handleInvoiceAction(editingInvoice.id, "pay")
-                            setInvoiceDialogOpen(false)
-                            setEditingInvoice(null)
-                            resetInvoiceForm()
-                            setInvoiceFromSheet(false)
-                            setInvoiceLoadingBtn(null)
+                            handleUpdateInvoice(false, true)
                           }}>
                             {invoiceLoadingBtn === "pay" && <LoaderCircle className="animate-spin" />}
                             Đã thu
