@@ -1775,6 +1775,7 @@ function DashboardContent() {
       } catch (err: any) {
         toast.error(err.message ?? "Lỗi khi lưu hoá đơn")
         setIsSubmitting(false)
+        setInvoiceLoadingBtn(null)
         return
       }
     } else {
